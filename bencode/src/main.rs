@@ -12,134 +12,118 @@ enum DecodeError {
     Empty(usize),
     LeadingZero(usize),
 }
-trait BencodeDecode {
-    fn decode(&mut self, enc_str: &[u8], pos: usize) -> Result<usize, DecodeError>;
+
+enum BencodeValue {
+    Int(i32),
+    ByteStr(Vec<u8>),
+    List(Vec<BencodeValue>),
+    Dict(BTreeMap<String, BencodeValue>),
 }
 
 struct Int {
     value: i32
 }
-impl BencodeDecode for Int {
-    fn decode(&mut self, enc_str: &[u8], pos: usize) -> Result<usize, DecodeError> {
-        // All bencoded ints start have format `i<base_10_int>e`
-        let mut pos: usize = pos;
-        let mut started = false;
-        let mut ended = false;
-        let mut int_chars: Vec<u8> = Vec::new();
-        let mut sign = 1;
 
-        while pos < enc_str.len() {
-            match enc_str[pos] {
-                b'i' => {
-                    if started {
-                        return Err(DecodeError::DuplicateStartToken(pos))
-                    }
-                    started = true;
-                    pos += 1;
-                },
-                b'0'..=b'9' => {
-                    if int_chars.last() == Some(&b'0') {
-                        return Err(DecodeError::LeadingZero(pos))
-                    }
-                    int_chars.push(enc_str[pos]);
-                    pos += 1;
+fn decode_int(enc_str: &[u8], pos: usize) -> Result<(i32, usize), DecodeError> {
+    // All bencoded ints start have format `i<base_10_int>e`
+    let mut pos: usize = pos;
+    let mut started = false;
+    let mut ended = false;
+    let mut int_chars: Vec<u8> = Vec::new();
+    let mut sign = 1;
+
+    while pos < enc_str.len() {
+        match enc_str[pos] {
+            b'i' => {
+                if started {
+                    return Err(DecodeError::DuplicateStartToken(pos))
                 }
-                b'-' => {
-                    sign *= -1;
-                    pos += 1;
+                started = true;
+                pos += 1;
+            },
+            b'0'..=b'9' => {
+                if int_chars.last() == Some(&b'0') {
+                    return Err(DecodeError::LeadingZero(pos))
                 }
-                b'e' => {
-                    if int_chars.len() == 0 {
-                        return Err(DecodeError::Empty(pos))
-                    }
-                    ended = true;
-                    pos += 1;
-                    break;
-                },
-                _ => return Err(DecodeError::InvalidToken(pos, enc_str[pos] as char))
+                int_chars.push(enc_str[pos]);
+                pos += 1;
             }
-        }
-
-        if !ended {
-            return Err(DecodeError::NoEndToken(pos))
-        }
-
-        self.value = int_chars
-            .iter()
-            .map(|x| x - b'0')
-            .fold(0, |acc, x| acc * 10 + x as i32);
-        self.value *= sign;
-
-        Ok(pos)
-    }
-}
-
-struct ByteStr {
-    value: Vec<u8>
-}
-impl BencodeDecode for ByteStr {
-    fn decode(&mut self, enc_str: &[u8], pos: usize) -> Result<usize, DecodeError> {
-        // Step 1: parse the length of the byte string
-        let start_pos = pos;
-        let mut pos: usize = 0;
-        let mut str_sz: usize = 0;
-        let mut valid_len = false;
-
-        while pos < enc_str.len() {
-            match enc_str[pos] {
-                b'0'..=b'9' => {
-                    if enc_str[pos] == b'0' && start_pos != pos {
-                        return Err(DecodeError::LeadingZero(pos))
-                    }
-
-                    let digit = enc_str[pos] - b'0';
-                    str_sz = str_sz * 10 + digit as usize;
-                    pos += 1;
-                },
-                b':' => {
-                    valid_len = true;
-                    pos += 1;
-                    break;
-                },
-                _ => return Err(DecodeError::InvalidToken(pos, enc_str[pos] as char))
+            b'-' => {
+                sign *= -1;
+                pos += 1;
             }
+            b'e' => {
+                if int_chars.len() == 0 {
+                    return Err(DecodeError::Empty(pos))
+                }
+                ended = true;
+                pos += 1;
+                break;
+            },
+            _ => return Err(DecodeError::InvalidToken(pos, enc_str[pos] as char))
         }
-
-        if !valid_len {
-            return Err(DecodeError::InvalidLength(pos))
-        }
-
-        // Early return for zero-length string
-        if str_sz == 0 {
-            self.value = vec![];
-            return Ok(pos);
-        }
-
-        // Step 2: parse the byte string
-        if pos + str_sz > enc_str.len() {
-            return Err(DecodeError::ByteStrEOF(pos))
-        }
-
-        self.value = enc_str[pos..pos + str_sz].to_vec();
-        pos += str_sz;
-
-        Ok(pos)
     }
-}
 
-struct List {
-    value: Vec<Box<dyn BencodeDecode>>
-}
-impl BencodeDecode for List {
-    fn decode(&mut self, enc_str: &[u8], pos: usize) -> Result<usize, DecodeError> {
-        // Gross
-        Ok(pos)
+    if !ended {
+        return Err(DecodeError::NoEndToken(pos))
     }
+
+    let ret = int_chars
+        .iter()
+        .map(|x| x - b'0')
+        .fold(0, |acc, x| acc * 10 + x as i32)
+        * sign;
+
+    Ok((ret, pos))
 }
 
-struct Dict {
-    value: BTreeMap<String, Box<dyn BencodeDecode>>,
+fn decode_bytestr(enc_str: &[u8], pos: usize) -> Result<(Vec<u8>, usize), DecodeError> {
+    // Step 1: parse the length of the byte string
+    let start_pos = pos;
+    let mut pos: usize = 0;
+    let mut str_sz: usize = 0;
+    let mut valid_len = false;
+
+    while pos < enc_str.len() {
+        match enc_str[pos] {
+            b'0'..=b'9' => {
+                if enc_str[pos] == b'0' && start_pos != pos {
+                    return Err(DecodeError::LeadingZero(pos))
+                }
+
+                let digit = enc_str[pos] - b'0';
+                str_sz = str_sz * 10 + digit as usize;
+                pos += 1;
+            },
+            b':' => {
+                valid_len = true;
+                pos += 1;
+                break;
+            },
+            _ => return Err(DecodeError::InvalidToken(pos, enc_str[pos] as char))
+        }
+    }
+
+    if !valid_len {
+        return Err(DecodeError::InvalidLength(pos))
+    }
+
+    // Early return for zero-length string
+    if str_sz == 0 {
+        return Ok((vec![], pos));
+    }
+
+    // Step 2: parse the byte string
+    if pos + str_sz > enc_str.len() {
+        return Err(DecodeError::ByteStrEOF(pos))
+    }
+
+    let ret = enc_str[pos..pos + str_sz].to_vec();
+    pos += str_sz;
+
+    Ok((ret, pos))
 }
+
 enum ScopeType {
     Root,
     List,
@@ -148,12 +132,12 @@ enum ScopeType {
 
 struct Scope {
     stype: ScopeType,
-    items: Vec<Box<dyn BencodeDecode>>,
+    items: Vec<BencodeValue>,
 }
 
-fn decode(enc_str: &str) -> Result<Vec<Box<dyn BencodeDecode>>, DecodeError> {
+fn decode(enc_str: &str) -> Result<Vec<BencodeValue>, DecodeError> {
     let str_bytes = enc_str.as_bytes();
-    let ret: Vec<Box<dyn BencodeDecode>> = Vec::new();
+    let ret: Vec<BencodeValue> = Vec::new();
     let mut pos: usize = 0;
 
     // Maintain a stack for dealing with lists and dicts
@@ -163,16 +147,14 @@ fn decode(enc_str: &str) -> Result<Vec<Box<dyn BencodeDecode>>, DecodeError> {
     while pos < str_bytes.len() {
         match str_bytes[pos] {
             b'i' => {
-                // Gross, we're basically decoding by using a side effect.
-                // Restructure this to avoid
-                let mut ele = Int{ value: 0 };
-                pos += ele.decode(&str_bytes, pos)?;
-                stack.last_mut().unwrap().items.push(Box::new(ele));
+                let (item, item_len) = decode_int(str_bytes, pos)?;
+                stack.last_mut().unwrap().items.push(BencodeValue::Int(item));
+                pos += item_len;
             },
             b'0'..=b'9' => {
-                let mut ele = ByteStr{ value: vec![] };
-                pos += ele.decode(&str_bytes, pos)?;
-                stack.last_mut().unwrap().items.push(Box::new(ele));
+                let (item, item_len) = decode_bytestr(str_bytes, pos)?;
+                stack.last_mut().unwrap().items.push(BencodeValue::ByteStr(item));
+                pos += item_len;
             }
             b'l' => {
                 // Start a "new scope"
@@ -189,8 +171,7 @@ fn decode(enc_str: &str) -> Result<Vec<Box<dyn BencodeDecode>>, DecodeError> {
                 // TODO: what does this mean for dicts
                 match stack.pop().unwrap() {
                     Scope { stype: ScopeType::List, items } => {
-                        let ele = List{ value: items };
-                        stack.last_mut().unwrap().items.push(Box::new(ele));
+                        stack.last_mut().unwrap().items.push(BencodeValue::List(items));
                     },
                     Scope { stype: ScopeType::Dict, items } => {
                         todo!()
@@ -199,7 +180,7 @@ fn decode(enc_str: &str) -> Result<Vec<Box<dyn BencodeDecode>>, DecodeError> {
                         return Err(DecodeError::InvalidEndToken(pos))
                     }
                 }
-
+                pos += 1;
             }
             _ => return Err(DecodeError::InvalidToken(pos, str_bytes[pos] as char))
         }
@@ -226,118 +207,96 @@ mod tests {
     #[test]
     fn test_int_ok() {
         let str = "i1234567890e".as_bytes();
-
-        let mut ele = Int{ value: 0 };
-        let pos = ele.decode(&str, 0).unwrap();
+        let (item, pos) = decode_int(&str, 0).unwrap();
 
         assert_eq!(pos, 12);
-        assert_eq!(ele.value, 1234567890);
+        assert_eq!(item, 1234567890);
     }
 
     #[test]
     fn test_int_neg() {
         let str = "i-125e".as_bytes();
-
-        let mut ele = Int{ value: 0 };
-        let pos = ele.decode(&str, 0).unwrap();
+        let (item, pos) = decode_int(&str, 0).unwrap();
 
         assert_eq!(pos, 6);
-        assert_eq!(ele.value, -125);
+        assert_eq!(item, -125);
     }
 
     #[test]
     fn test_int_double_neg() {
         let str = "i--69e".as_bytes();
-
-        let mut ele = Int{ value: 0 };
-        let pos = ele.decode(&str, 0).unwrap();
+        let (item, pos) = decode_int(&str, 0).unwrap();
 
         assert_eq!(pos, 6);
-        assert_eq!(ele.value, 69);
+        assert_eq!(item, 69);
     }
 
     #[test]
     fn test_int_empty() {
         let str = "ie".as_bytes();
-        let mut ele = Int{ value: 0 };
+        let result = decode_int(&str, 0);
 
-        let pos = ele.decode(&str, 0);
-
-        assert_eq!(pos.err(), Some(DecodeError::Empty(1)));
+        assert_eq!(result.err(), Some(DecodeError::Empty(1)));
     }
 
     #[test]
     fn test_int_invalid() {
         let str = "iBe".as_bytes();
+        let result = decode_int(&str, 0);
 
-        let mut ele = Int{ value: 0 };
-        let pos = ele.decode(&str, 0);
-
-        assert_eq!(pos.err(), Some(DecodeError::InvalidToken(1, 'B')));
+        assert_eq!(result.err(), Some(DecodeError::InvalidToken(1, 'B')));
     }
 
     #[test]
     fn test_int_noend() {
         let str = "i420".as_bytes();
+        let result = decode_int(&str, 0);
 
-        let mut ele = Int{ value: 0 };
-        let pos = ele.decode(&str, 0);
-
-        assert_eq!(pos.err(), Some(DecodeError::NoEndToken(4)));
+        assert_eq!(result.err(), Some(DecodeError::NoEndToken(4)));
     }
 
     #[test]
     fn test_int_duplicate_start() {
         let str = "ii420".as_bytes();
+        let result = decode_int(&str, 0);
 
-        let mut ele = Int{ value: 0 };
-        let pos = ele.decode(&str, 0);
-
-        assert_eq!(pos.err(), Some(DecodeError::DuplicateStartToken(1)));
+        assert_eq!(result.err(), Some(DecodeError::DuplicateStartToken(1)));
     }
 
     #[test]
     fn test_bstr_ok() {
         let str = "3:hey".as_bytes();
-
-        let mut ele = ByteStr{ value: vec![] };
-        let pos = ele.decode(str, 0).unwrap();
+        let (item, pos) = decode_bytestr(str, 0).unwrap();
 
         assert_eq!(pos, 5);
-        assert_eq!(ele.value, b"hey".to_vec());
+        assert_eq!(item, b"hey");
     }
 
     #[test]
     fn test_bstr_long() {
         let str = "44:The quick brown fox jumped over the lazy dog".as_bytes();
-
-        let mut ele = ByteStr{ value: vec![] };
-        let pos = ele.decode(str, 0).unwrap();
+        let (item, pos) = decode_bytestr(str, 0).unwrap();
 
         assert_eq!(pos, 47);
-        assert_eq!(ele.value, b"The quick brown fox jumped over the lazy dog".to_vec());
+        assert_eq!(item, b"The quick brown fox jumped over the lazy dog");
     }
 
     #[test]
     fn test_bstr_bytes() {
         let str = &[b'4', b':', 0xAA, 0xBB, 0xCC, 0xDD];
-
-        let mut ele = ByteStr{ value: vec![] };
-        let pos = ele.decode(str, 0).unwrap();
+        let (item, pos) = decode_bytestr(str, 0).unwrap();
 
         assert_eq!(pos, 6);
-        assert_eq!(ele.value, vec![0xAA, 0xBB, 0xCC, 0xDD]);
+        assert_eq!(item, &[0xAA, 0xBB, 0xCC, 0xDD]);
     }
 
     #[test]
     fn test_bstr_empty() {
         let str = "0:".as_bytes();
-
-        let mut ele = ByteStr{ value: vec![] };
-        let pos = ele.decode(str, 0).unwrap();
+        let (item, pos) = decode_bytestr(str, 0).unwrap();
 
         assert_eq!(pos, 2);
-        assert_eq!(ele.value, vec![]);
+        assert_eq!(item, b"");
     }
 }
 
