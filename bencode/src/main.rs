@@ -8,28 +8,28 @@ enum DecodeError {
     InvalidLength(usize),
     ByteStrEOF(usize),
     NoEndToken(usize),
+    NoStartToken(usize),
     InvalidEndToken(usize),
+    InvalidDict(usize),
     Empty(usize),
     LeadingZero(usize),
 }
 
+#[derive(PartialEq)]
+#[derive(Debug)]
 enum BencodeValue {
     Int(i32),
     ByteStr(Vec<u8>),
     List(Vec<BencodeValue>),
-    Dict(BTreeMap<String, BencodeValue>),
+    Dict(BTreeMap<Vec<u8>, BencodeValue>),
 }
 
-struct Int {
-    value: i32
-}
-
-fn decode_int(enc_str: &[u8], pos: usize) -> Result<(i32, usize), DecodeError> {
+fn decode_int(enc_str: &[u8], start_pos: usize) -> Result<(i32, usize), DecodeError> {
     // All bencoded ints start have format `i<base_10_int>e`
-    let mut pos: usize = pos;
+    let mut pos: usize = start_pos;
     let mut started = false;
     let mut ended = false;
-    let mut int_chars: Vec<u8> = Vec::new();
+    let mut value: i32 = 0;
     let mut sign = 1;
 
     while pos < enc_str.len() {
@@ -42,18 +42,23 @@ fn decode_int(enc_str: &[u8], pos: usize) -> Result<(i32, usize), DecodeError> {
                 pos += 1;
             },
             b'0'..=b'9' => {
-                if int_chars.last() == Some(&b'0') {
-                    return Err(DecodeError::LeadingZero(pos))
+                if pos - start_pos > 2 && value == 0 {
+                    return Err(DecodeError::LeadingZero(pos));
                 }
-                int_chars.push(enc_str[pos]);
+                value = value * 10 + (enc_str[pos] - b'0') as i32;
                 pos += 1;
             }
             b'-' => {
-                sign *= -1;
+                // Can't have more than one sign (e.g. double negative)
+                // Check if we've already "flipped" the sign
+                if sign == -1 {
+                    return Err(DecodeError::InvalidToken(pos, enc_str[pos] as char));
+                }
+                sign = -1;
                 pos += 1;
             }
             b'e' => {
-                if int_chars.len() == 0 {
+                if pos - start_pos <= 1 {
                     return Err(DecodeError::Empty(pos))
                 }
                 ended = true;
@@ -68,19 +73,12 @@ fn decode_int(enc_str: &[u8], pos: usize) -> Result<(i32, usize), DecodeError> {
         return Err(DecodeError::NoEndToken(pos))
     }
 
-    let ret = int_chars
-        .iter()
-        .map(|x| x - b'0')
-        .fold(0, |acc, x| acc * 10 + x as i32)
-        * sign;
-
-    Ok((ret, pos))
+    Ok((value * sign, pos - start_pos))
 }
 
-fn decode_bytestr(enc_str: &[u8], pos: usize) -> Result<(Vec<u8>, usize), DecodeError> {
+fn decode_bytestr(enc_str: &[u8], start_pos: usize) -> Result<(Vec<u8>, usize), DecodeError> {
     // Step 1: parse the length of the byte string
-    let start_pos = pos;
-    let mut pos: usize = 0;
+    let mut pos: usize = start_pos;
     let mut str_sz: usize = 0;
     let mut valid_len = false;
 
@@ -110,7 +108,7 @@ fn decode_bytestr(enc_str: &[u8], pos: usize) -> Result<(Vec<u8>, usize), Decode
 
     // Early return for zero-length string
     if str_sz == 0 {
-        return Ok((vec![], pos));
+        return Ok((vec![], pos - start_pos));
     }
 
     // Step 2: parse the byte string
@@ -121,7 +119,7 @@ fn decode_bytestr(enc_str: &[u8], pos: usize) -> Result<(Vec<u8>, usize), Decode
     let ret = enc_str[pos..pos + str_sz].to_vec();
     pos += str_sz;
 
-    Ok((ret, pos))
+    Ok((ret, pos - start_pos))
 }
 
 enum ScopeType {
@@ -159,10 +157,11 @@ fn decode(enc_str: &str) -> Result<Vec<BencodeValue>, DecodeError> {
             b'l' => {
                 // Start a "new scope"
                 stack.push(Scope { stype: ScopeType::List, items: vec![] });
-                pos += 1
+                pos += 1;
             }
             b'd' => {
-                todo!()
+                stack.push(Scope { stype: ScopeType::Dict, items: vec![] });
+                pos += 1;
             }
             b'e' => {
                 // We'll only see 'e' when we're in a scope (parsing a list or dict) because the
@@ -174,9 +173,24 @@ fn decode(enc_str: &str) -> Result<Vec<BencodeValue>, DecodeError> {
                         stack.last_mut().unwrap().items.push(BencodeValue::List(items));
                     },
                     Scope { stype: ScopeType::Dict, items } => {
-                        todo!()
+                        if items.len() % 2 != 0 {
+                            // TODO: change this to MissingKey and MissingValue errors
+                            return Err(DecodeError::InvalidDict(pos));
+                        }
+
+                        // Iterate over pairs and create a BTreeMap from them
+                        let mut dict_item: BTreeMap<Vec<u8>, BencodeValue> = BTreeMap::new();
+                        let mut iter = items.into_iter();
+                        while let (Some(key_item), Some(val_item)) = (iter.next(), iter.next()) {
+                            if let BencodeValue::ByteStr(key) = key_item {
+                                dict_item.insert(key, val_item);
+                            }
+                        }
+
+                        // TODO: check for lexicographic order after map is created
+                        stack.last_mut().unwrap().items.push(BencodeValue::Dict(dict_item))
                     }
-                    Scope { stype: ScopeType::Root, items } => {
+                    Scope { stype: ScopeType::Root, items: _ } => {
                         return Err(DecodeError::InvalidEndToken(pos))
                     }
                 }
@@ -196,12 +210,130 @@ fn decode(enc_str: &str) -> Result<Vec<BencodeValue>, DecodeError> {
 }
 
 #[cfg(test)]
-mod tests {
+mod unit_tests {
     use super::*;
 
+    #[test]
+    fn test_dict_ok() {
+        let str = "d3:heyi69ee";
+        let ret = decode(str).unwrap();
+
+        assert_eq!(ret, vec![
+            BencodeValue::Dict(BTreeMap::from([
+                (b"hey".to_vec(), BencodeValue::Int(69)),
+            ]))
+        ])
+    }
+
+    #[test]
+    fn test_dict_nested() {
+        let str = "d3:heyd3:food3:bari420eeee";
+        let ret = decode(str).unwrap();
+
+        assert_eq!(ret, vec![
+            BencodeValue::Dict(BTreeMap::from([
+                (b"hey".to_vec(), BencodeValue::Dict(BTreeMap::from([
+                    (b"foo".to_vec(), BencodeValue::Dict(BTreeMap::from([
+                        (b"bar".to_vec(), BencodeValue::Int(420)),
+                    ]))),
+                ]))),
+            ]))
+        ])
+    }
+
+    #[test]
+    fn test_complex_nested() {
+        // The big kahuna!
+        // Represents:
+        // {
+        //   "user": [
+        //     {"name": "John", "age": 30, "scores": [100, [95, 88]]}
+        //   ],
+        //   "meta": {"admin": "", "1": "y", "active": "1"}
+        // }
+        let str = "d4:userld4:name4:John3:agei30e6:scoresli100eli95ei88eeeee4:metad5:admin0:1:11:y6:active1:1ee";
+        let ret = decode(str).unwrap();
+
+        assert_eq!(ret, vec![
+            BencodeValue::Dict(BTreeMap::from([
+                (b"user".to_vec(), BencodeValue::List(vec![
+                    BencodeValue::Dict(BTreeMap::from([
+                        (b"name".to_vec(), BencodeValue::ByteStr(b"John".to_vec())),
+                        (b"age".to_vec(), BencodeValue::Int(30)),
+                        (b"scores".to_vec(), BencodeValue::List(vec![
+                            BencodeValue::Int(100),
+                            BencodeValue::List(vec![
+                                BencodeValue::Int(95),
+                                BencodeValue::Int(88),
+                            ]),
+                        ])),
+                    ])),
+                ])),
+                (b"meta".to_vec(), BencodeValue::Dict(BTreeMap::from([
+                    (b"admin".to_vec(), BencodeValue::ByteStr(b"".to_vec())),
+                    (b"1".to_vec(), BencodeValue::ByteStr(b"y".to_vec())),
+                    (b"active".to_vec(), BencodeValue::ByteStr(b"1".to_vec())),
+                ]))),
+            ]))
+        ]);
+    }
+
+    #[test]
     fn test_list_ok() {
         let str = "li420ei69ee";
         let ret = decode(str).unwrap();
+
+        assert_eq!(ret, vec![
+            BencodeValue::List(vec![
+                BencodeValue::Int(420),
+                BencodeValue::Int(69),
+            ])
+        ])
+    }
+    #[test]
+    fn test_list_empty() {
+        let str = "le";
+        let ret = decode(str).unwrap();
+
+        assert_eq!(ret, vec![
+            BencodeValue::List(vec![]),
+        ])
+    }
+
+    #[test]
+    fn test_list_nested() {
+        let str = "llli420eeee";
+        let ret = decode(str).unwrap();
+
+        assert_eq!(ret, vec![
+            BencodeValue::List(vec![
+                BencodeValue::List(vec![
+                    BencodeValue::List(vec![
+                        BencodeValue::Int(420),
+                    ])
+                ])
+            ])
+        ])
+    }
+
+    #[test]
+    fn test_list_complex() {
+        let str = "lli420el3:heyeel5:Helloee";
+        let ret = decode(str).unwrap();
+
+        assert_eq!(ret, vec![
+            BencodeValue::List(vec![
+                BencodeValue::List(vec![
+                    BencodeValue::Int(420),
+                    BencodeValue::List(vec![
+                        BencodeValue::ByteStr("hey".as_bytes().to_vec())
+                    ])
+                ]),
+                BencodeValue::List(vec![
+                    BencodeValue::ByteStr("Hello".as_bytes().to_vec())
+                ])
+            ])
+        ])
     }
 
     #[test]
@@ -225,10 +357,9 @@ mod tests {
     #[test]
     fn test_int_double_neg() {
         let str = "i--69e".as_bytes();
-        let (item, pos) = decode_int(&str, 0).unwrap();
+        let result = decode_int(&str, 0);
 
-        assert_eq!(pos, 6);
-        assert_eq!(item, 69);
+        assert_eq!(result.err(), Some(DecodeError::InvalidToken(2, '-')))
     }
 
     #[test]
@@ -297,6 +428,18 @@ mod tests {
 
         assert_eq!(pos, 2);
         assert_eq!(item, b"");
+    }
+
+    #[test]
+    fn test_bstr_backtoback() {
+        let str = "5:admin0:3:hey";
+        let result = decode(str).unwrap();
+
+        assert_eq!(result, vec![
+            BencodeValue::ByteStr("admin".as_bytes().to_vec()),
+            BencodeValue::ByteStr("".as_bytes().to_vec()),
+            BencodeValue::ByteStr("hey".as_bytes().to_vec()),
+        ]);
     }
 }
 
