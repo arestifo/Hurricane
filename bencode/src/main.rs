@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq, Debug)]
 enum DecodeError {
     DuplicateStartToken(usize),
     InvalidToken(usize, char),
@@ -83,7 +83,7 @@ fn decode_bytestr(enc_str: &[u8], start_pos: usize) -> Result<(Vec<u8>, usize), 
     while pos < enc_str.len() {
         match enc_str[pos] {
             b'0'..=b'9' => {
-                if enc_str[pos] == b'0' && start_pos != pos {
+                if enc_str[pos] == b'0' && str_sz == 0 && start_pos != pos {
                     return Err(DecodeError::LeadingZero(pos));
                 }
 
@@ -131,8 +131,7 @@ struct Scope {
     items: Vec<BencodeValue>,
 }
 
-fn decode(enc_str: &str) -> Result<Vec<BencodeValue>, DecodeError> {
-    let str_bytes = enc_str.as_bytes();
+fn decode(buf: &[u8]) -> Result<Vec<BencodeValue>, DecodeError> {
     let ret: Vec<BencodeValue> = Vec::new();
     let mut pos: usize = 0;
 
@@ -143,10 +142,10 @@ fn decode(enc_str: &str) -> Result<Vec<BencodeValue>, DecodeError> {
         items: ret,
     });
 
-    while pos < str_bytes.len() {
-        match str_bytes[pos] {
+    while pos < buf.len() {
+        match buf[pos] {
             b'i' => {
-                let (item, item_len) = decode_int(str_bytes, pos)?;
+                let (item, item_len) = decode_int(buf, pos)?;
                 stack
                     .last_mut()
                     .unwrap()
@@ -155,7 +154,7 @@ fn decode(enc_str: &str) -> Result<Vec<BencodeValue>, DecodeError> {
                 pos += item_len;
             }
             b'0'..=b'9' => {
-                let (item, item_len) = decode_bytestr(str_bytes, pos)?;
+                let (item, item_len) = decode_bytestr(buf, pos)?;
                 stack
                     .last_mut()
                     .unwrap()
@@ -226,7 +225,7 @@ fn decode(enc_str: &str) -> Result<Vec<BencodeValue>, DecodeError> {
                 }
                 pos += 1;
             }
-            _ => return Err(DecodeError::InvalidToken(pos, str_bytes[pos] as char)),
+            _ => return Err(DecodeError::InvalidToken(pos, buf[pos] as char)),
         }
     }
 
@@ -240,13 +239,29 @@ fn decode(enc_str: &str) -> Result<Vec<BencodeValue>, DecodeError> {
 }
 
 #[cfg(test)]
+mod integration_tests {
+    use super::*;
+
+    #[test]
+    fn test_real_torrent_file() {
+        use std::fs;
+
+        let torrent_bytes = fs::read("tests/fixtures/sample.torrent").unwrap();
+
+        let result = decode(&torrent_bytes).expect("Failed to decode torrent file");
+
+        assert_eq!(result, vec![])
+    }
+}
+
+#[cfg(test)]
 mod unit_tests {
     use super::*;
 
     #[test]
     fn test_dict_ok() {
         let str = "d3:heyi69ee";
-        let ret = decode(str).unwrap();
+        let ret = decode(str.as_bytes()).unwrap();
 
         assert_eq!(
             ret,
@@ -260,7 +275,7 @@ mod unit_tests {
     #[test]
     fn test_dict_nested() {
         let str = "d3:heyd3:food3:bari420eeee";
-        let ret = decode(str).unwrap();
+        let ret = decode(str.as_bytes()).unwrap();
 
         assert_eq!(
             ret,
@@ -287,7 +302,7 @@ mod unit_tests {
         //   "meta": {"admin": "", "1": "y", "active": "1"}
         // }
         let str = "d4:userld4:name4:John3:agei30e6:scoresli100eli95ei88eeeee4:metad5:admin0:1:11:y6:active1:1ee";
-        let ret = decode(str).unwrap();
+        let ret = decode(str.as_bytes()).unwrap();
 
         assert_eq!(
             ret,
@@ -324,7 +339,7 @@ mod unit_tests {
     #[test]
     fn test_list_ok() {
         let str = "li420ei69ee";
-        let ret = decode(str).unwrap();
+        let ret = decode(str.as_bytes()).unwrap();
 
         assert_eq!(
             ret,
@@ -337,7 +352,7 @@ mod unit_tests {
     #[test]
     fn test_list_empty() {
         let str = "le";
-        let ret = decode(str).unwrap();
+        let ret = decode(str.as_bytes()).unwrap();
 
         assert_eq!(ret, vec![BencodeValue::List(vec![]),])
     }
@@ -345,7 +360,7 @@ mod unit_tests {
     #[test]
     fn test_list_nested() {
         let str = "llli420eeee";
-        let ret = decode(str).unwrap();
+        let ret = decode(str.as_bytes()).unwrap();
 
         assert_eq!(
             ret,
@@ -358,7 +373,7 @@ mod unit_tests {
     #[test]
     fn test_list_complex() {
         let str = "lli420el3:heyeel5:Helloee";
-        let ret = decode(str).unwrap();
+        let ret = decode(str.as_bytes()).unwrap();
 
         assert_eq!(
             ret,
@@ -374,8 +389,8 @@ mod unit_tests {
 
     #[test]
     fn test_int_ok() {
-        let str = "i1234567890e".as_bytes();
-        let (item, pos) = decode_int(&str, 0).unwrap();
+        let str = "i1234567890e";
+        let (item, pos) = decode_int(&str.as_bytes(), 0).unwrap();
 
         assert_eq!(pos, 12);
         assert_eq!(item, 1234567890);
@@ -383,8 +398,8 @@ mod unit_tests {
 
     #[test]
     fn test_int_neg() {
-        let str = "i-125e".as_bytes();
-        let (item, pos) = decode_int(&str, 0).unwrap();
+        let str = "i-125e";
+        let (item, pos) = decode_int(&str.as_bytes(), 0).unwrap();
 
         assert_eq!(pos, 6);
         assert_eq!(item, -125);
@@ -392,48 +407,48 @@ mod unit_tests {
 
     #[test]
     fn test_int_double_neg() {
-        let str = "i--69e".as_bytes();
-        let result = decode_int(&str, 0);
+        let str = "i--69e";
+        let result = decode_int(&str.as_bytes(), 0);
 
         assert_eq!(result.err(), Some(DecodeError::InvalidToken(2, '-')))
     }
 
     #[test]
     fn test_int_empty() {
-        let str = "ie".as_bytes();
-        let result = decode_int(&str, 0);
+        let str = "ie";
+        let result = decode_int(&str.as_bytes(), 0);
 
         assert_eq!(result.err(), Some(DecodeError::Empty(1)));
     }
 
     #[test]
     fn test_int_invalid() {
-        let str = "iBe".as_bytes();
-        let result = decode_int(&str, 0);
+        let str = "iBe";
+        let result = decode_int(&str.as_bytes(), 0);
 
         assert_eq!(result.err(), Some(DecodeError::InvalidToken(1, 'B')));
     }
 
     #[test]
     fn test_int_noend() {
-        let str = "i420".as_bytes();
-        let result = decode_int(&str, 0);
+        let str = "i420";
+        let result = decode_int(&str.as_bytes(), 0);
 
         assert_eq!(result.err(), Some(DecodeError::NoEndToken(4)));
     }
 
     #[test]
     fn test_int_duplicate_start() {
-        let str = "ii420".as_bytes();
-        let result = decode_int(&str, 0);
+        let str = "ii420";
+        let result = decode_int(&str.as_bytes(), 0);
 
         assert_eq!(result.err(), Some(DecodeError::DuplicateStartToken(1)));
     }
 
     #[test]
     fn test_bstr_ok() {
-        let str = "3:hey".as_bytes();
-        let (item, pos) = decode_bytestr(str, 0).unwrap();
+        let str = "3:hey";
+        let (item, pos) = decode_bytestr(str.as_bytes(), 0).unwrap();
 
         assert_eq!(pos, 5);
         assert_eq!(item, b"hey");
@@ -441,8 +456,8 @@ mod unit_tests {
 
     #[test]
     fn test_bstr_long() {
-        let str = "44:The quick brown fox jumped over the lazy dog".as_bytes();
-        let (item, pos) = decode_bytestr(str, 0).unwrap();
+        let str = "44:The quick brown fox jumped over the lazy dog";
+        let (item, pos) = decode_bytestr(str.as_bytes(), 0).unwrap();
 
         assert_eq!(pos, 47);
         assert_eq!(item, b"The quick brown fox jumped over the lazy dog");
@@ -459,8 +474,8 @@ mod unit_tests {
 
     #[test]
     fn test_bstr_empty() {
-        let str = "0:".as_bytes();
-        let (item, pos) = decode_bytestr(str, 0).unwrap();
+        let str = "0:";
+        let (item, pos) = decode_bytestr(str.as_bytes(), 0).unwrap();
 
         assert_eq!(pos, 2);
         assert_eq!(item, b"");
@@ -468,8 +483,8 @@ mod unit_tests {
 
     #[test]
     fn test_bstr_backtoback() {
-        let str = "5:admin0:3:hey";
-        let result = decode(str).unwrap();
+        let str = "5:admin0:3:hey10:abcdefghij";
+        let result = decode(str.as_bytes()).unwrap();
 
         assert_eq!(
             result,
@@ -477,6 +492,7 @@ mod unit_tests {
                 BencodeValue::ByteStr("admin".as_bytes().to_vec()),
                 BencodeValue::ByteStr("".as_bytes().to_vec()),
                 BencodeValue::ByteStr("hey".as_bytes().to_vec()),
+                BencodeValue::ByteStr("abcdefghij".as_bytes().to_vec()),
             ]
         );
     }
