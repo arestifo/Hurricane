@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 
-#[derive(Debug)]
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 enum DecodeError {
     DuplicateStartToken(usize),
     InvalidToken(usize, char),
@@ -15,8 +14,7 @@ enum DecodeError {
     LeadingZero(usize),
 }
 
-#[derive(PartialEq)]
-#[derive(Debug)]
+#[derive(PartialEq, Debug)]
 enum BencodeValue {
     Int(i32),
     ByteStr(Vec<u8>),
@@ -36,11 +34,11 @@ fn decode_int(enc_str: &[u8], start_pos: usize) -> Result<(i32, usize), DecodeEr
         match enc_str[pos] {
             b'i' => {
                 if started {
-                    return Err(DecodeError::DuplicateStartToken(pos))
+                    return Err(DecodeError::DuplicateStartToken(pos));
                 }
                 started = true;
                 pos += 1;
-            },
+            }
             b'0'..=b'9' => {
                 if pos - start_pos > 2 && value == 0 {
                     return Err(DecodeError::LeadingZero(pos));
@@ -59,18 +57,18 @@ fn decode_int(enc_str: &[u8], start_pos: usize) -> Result<(i32, usize), DecodeEr
             }
             b'e' => {
                 if pos - start_pos <= 1 {
-                    return Err(DecodeError::Empty(pos))
+                    return Err(DecodeError::Empty(pos));
                 }
                 ended = true;
                 pos += 1;
                 break;
-            },
-            _ => return Err(DecodeError::InvalidToken(pos, enc_str[pos] as char))
+            }
+            _ => return Err(DecodeError::InvalidToken(pos, enc_str[pos] as char)),
         }
     }
 
     if !ended {
-        return Err(DecodeError::NoEndToken(pos))
+        return Err(DecodeError::NoEndToken(pos));
     }
 
     Ok((value * sign, pos - start_pos))
@@ -86,24 +84,24 @@ fn decode_bytestr(enc_str: &[u8], start_pos: usize) -> Result<(Vec<u8>, usize), 
         match enc_str[pos] {
             b'0'..=b'9' => {
                 if enc_str[pos] == b'0' && start_pos != pos {
-                    return Err(DecodeError::LeadingZero(pos))
+                    return Err(DecodeError::LeadingZero(pos));
                 }
 
                 let digit = enc_str[pos] - b'0';
                 str_sz = str_sz * 10 + digit as usize;
                 pos += 1;
-            },
+            }
             b':' => {
                 valid_len = true;
                 pos += 1;
                 break;
-            },
-            _ => return Err(DecodeError::InvalidToken(pos, enc_str[pos] as char))
+            }
+            _ => return Err(DecodeError::InvalidToken(pos, enc_str[pos] as char)),
         }
     }
 
     if !valid_len {
-        return Err(DecodeError::InvalidLength(pos))
+        return Err(DecodeError::InvalidLength(pos));
     }
 
     // Early return for zero-length string
@@ -113,7 +111,7 @@ fn decode_bytestr(enc_str: &[u8], start_pos: usize) -> Result<(Vec<u8>, usize), 
 
     // Step 2: parse the byte string
     if pos + str_sz > enc_str.len() {
-        return Err(DecodeError::ByteStrEOF(pos))
+        return Err(DecodeError::ByteStrEOF(pos));
     }
 
     let ret = enc_str[pos..pos + str_sz].to_vec();
@@ -140,27 +138,44 @@ fn decode(enc_str: &str) -> Result<Vec<BencodeValue>, DecodeError> {
 
     // Maintain a stack for dealing with lists and dicts
     let mut stack: Vec<Scope> = Vec::new();
-    stack.push(Scope { stype: ScopeType::Root, items: ret });
+    stack.push(Scope {
+        stype: ScopeType::Root,
+        items: ret,
+    });
 
     while pos < str_bytes.len() {
         match str_bytes[pos] {
             b'i' => {
                 let (item, item_len) = decode_int(str_bytes, pos)?;
-                stack.last_mut().unwrap().items.push(BencodeValue::Int(item));
+                stack
+                    .last_mut()
+                    .unwrap()
+                    .items
+                    .push(BencodeValue::Int(item));
                 pos += item_len;
-            },
+            }
             b'0'..=b'9' => {
                 let (item, item_len) = decode_bytestr(str_bytes, pos)?;
-                stack.last_mut().unwrap().items.push(BencodeValue::ByteStr(item));
+                stack
+                    .last_mut()
+                    .unwrap()
+                    .items
+                    .push(BencodeValue::ByteStr(item));
                 pos += item_len;
             }
             b'l' => {
                 // Start a "new scope"
-                stack.push(Scope { stype: ScopeType::List, items: vec![] });
+                stack.push(Scope {
+                    stype: ScopeType::List,
+                    items: vec![],
+                });
                 pos += 1;
             }
             b'd' => {
-                stack.push(Scope { stype: ScopeType::Dict, items: vec![] });
+                stack.push(Scope {
+                    stype: ScopeType::Dict,
+                    items: vec![],
+                });
                 pos += 1;
             }
             b'e' => {
@@ -169,10 +184,20 @@ fn decode(enc_str: &str) -> Result<Vec<BencodeValue>, DecodeError> {
                 // So if we're not in a scope, it's an error. Otherwise we simply exit the scope
                 // TODO: what does this mean for dicts
                 match stack.pop().unwrap() {
-                    Scope { stype: ScopeType::List, items } => {
-                        stack.last_mut().unwrap().items.push(BencodeValue::List(items));
-                    },
-                    Scope { stype: ScopeType::Dict, items } => {
+                    Scope {
+                        stype: ScopeType::List,
+                        items,
+                    } => {
+                        stack
+                            .last_mut()
+                            .unwrap()
+                            .items
+                            .push(BencodeValue::List(items));
+                    }
+                    Scope {
+                        stype: ScopeType::Dict,
+                        items,
+                    } => {
                         if items.len() % 2 != 0 {
                             // TODO: change this to MissingKey and MissingValue errors
                             return Err(DecodeError::InvalidDict(pos));
@@ -188,22 +213,27 @@ fn decode(enc_str: &str) -> Result<Vec<BencodeValue>, DecodeError> {
                         }
 
                         // TODO: check for lexicographic order after map is created
-                        stack.last_mut().unwrap().items.push(BencodeValue::Dict(dict_item))
+                        stack
+                            .last_mut()
+                            .unwrap()
+                            .items
+                            .push(BencodeValue::Dict(dict_item))
                     }
-                    Scope { stype: ScopeType::Root, items: _ } => {
-                        return Err(DecodeError::InvalidEndToken(pos))
-                    }
+                    Scope {
+                        stype: ScopeType::Root,
+                        items: _,
+                    } => return Err(DecodeError::InvalidEndToken(pos)),
                 }
                 pos += 1;
             }
-            _ => return Err(DecodeError::InvalidToken(pos, str_bytes[pos] as char))
+            _ => return Err(DecodeError::InvalidToken(pos, str_bytes[pos] as char)),
         }
     }
 
     // If there's still unclosed scopes, we're missing an end token somewhere
     // We want to end parsing with just the root scope
     if stack.len() > 1 {
-        return Err(DecodeError::NoEndToken(pos))
+        return Err(DecodeError::NoEndToken(pos));
     }
 
     Ok(stack.pop().unwrap().items)
@@ -218,11 +248,13 @@ mod unit_tests {
         let str = "d3:heyi69ee";
         let ret = decode(str).unwrap();
 
-        assert_eq!(ret, vec![
-            BencodeValue::Dict(BTreeMap::from([
-                (b"hey".to_vec(), BencodeValue::Int(69)),
-            ]))
-        ])
+        assert_eq!(
+            ret,
+            vec![BencodeValue::Dict(BTreeMap::from([(
+                b"hey".to_vec(),
+                BencodeValue::Int(69)
+            ),]))]
+        )
     }
 
     #[test]
@@ -230,15 +262,18 @@ mod unit_tests {
         let str = "d3:heyd3:food3:bari420eeee";
         let ret = decode(str).unwrap();
 
-        assert_eq!(ret, vec![
-            BencodeValue::Dict(BTreeMap::from([
-                (b"hey".to_vec(), BencodeValue::Dict(BTreeMap::from([
-                    (b"foo".to_vec(), BencodeValue::Dict(BTreeMap::from([
-                        (b"bar".to_vec(), BencodeValue::Int(420)),
-                    ]))),
-                ]))),
-            ]))
-        ])
+        assert_eq!(
+            ret,
+            vec![BencodeValue::Dict(BTreeMap::from([(
+                b"hey".to_vec(),
+                BencodeValue::Dict(BTreeMap::from([(
+                    b"foo".to_vec(),
+                    BencodeValue::Dict(BTreeMap::from(
+                        [(b"bar".to_vec(), BencodeValue::Int(420)),]
+                    ))
+                ),]))
+            ),]))]
+        )
     }
 
     #[test]
@@ -254,28 +289,36 @@ mod unit_tests {
         let str = "d4:userld4:name4:John3:agei30e6:scoresli100eli95ei88eeeee4:metad5:admin0:1:11:y6:active1:1ee";
         let ret = decode(str).unwrap();
 
-        assert_eq!(ret, vec![
-            BencodeValue::Dict(BTreeMap::from([
-                (b"user".to_vec(), BencodeValue::List(vec![
-                    BencodeValue::Dict(BTreeMap::from([
+        assert_eq!(
+            ret,
+            vec![BencodeValue::Dict(BTreeMap::from([
+                (
+                    b"user".to_vec(),
+                    BencodeValue::List(vec![BencodeValue::Dict(BTreeMap::from([
                         (b"name".to_vec(), BencodeValue::ByteStr(b"John".to_vec())),
                         (b"age".to_vec(), BencodeValue::Int(30)),
-                        (b"scores".to_vec(), BencodeValue::List(vec![
-                            BencodeValue::Int(100),
+                        (
+                            b"scores".to_vec(),
                             BencodeValue::List(vec![
-                                BencodeValue::Int(95),
-                                BencodeValue::Int(88),
-                            ]),
-                        ])),
-                    ])),
-                ])),
-                (b"meta".to_vec(), BencodeValue::Dict(BTreeMap::from([
-                    (b"admin".to_vec(), BencodeValue::ByteStr(b"".to_vec())),
-                    (b"1".to_vec(), BencodeValue::ByteStr(b"y".to_vec())),
-                    (b"active".to_vec(), BencodeValue::ByteStr(b"1".to_vec())),
-                ]))),
-            ]))
-        ]);
+                                BencodeValue::Int(100),
+                                BencodeValue::List(vec![
+                                    BencodeValue::Int(95),
+                                    BencodeValue::Int(88),
+                                ]),
+                            ])
+                        ),
+                    ])),])
+                ),
+                (
+                    b"meta".to_vec(),
+                    BencodeValue::Dict(BTreeMap::from([
+                        (b"admin".to_vec(), BencodeValue::ByteStr(b"".to_vec())),
+                        (b"1".to_vec(), BencodeValue::ByteStr(b"y".to_vec())),
+                        (b"active".to_vec(), BencodeValue::ByteStr(b"1".to_vec())),
+                    ]))
+                ),
+            ]))]
+        );
     }
 
     #[test]
@@ -283,21 +326,20 @@ mod unit_tests {
         let str = "li420ei69ee";
         let ret = decode(str).unwrap();
 
-        assert_eq!(ret, vec![
-            BencodeValue::List(vec![
+        assert_eq!(
+            ret,
+            vec![BencodeValue::List(vec![
                 BencodeValue::Int(420),
                 BencodeValue::Int(69),
-            ])
-        ])
+            ])]
+        )
     }
     #[test]
     fn test_list_empty() {
         let str = "le";
         let ret = decode(str).unwrap();
 
-        assert_eq!(ret, vec![
-            BencodeValue::List(vec![]),
-        ])
+        assert_eq!(ret, vec![BencodeValue::List(vec![]),])
     }
 
     #[test]
@@ -305,15 +347,12 @@ mod unit_tests {
         let str = "llli420eeee";
         let ret = decode(str).unwrap();
 
-        assert_eq!(ret, vec![
-            BencodeValue::List(vec![
-                BencodeValue::List(vec![
-                    BencodeValue::List(vec![
-                        BencodeValue::Int(420),
-                    ])
-                ])
-            ])
-        ])
+        assert_eq!(
+            ret,
+            vec![BencodeValue::List(vec![BencodeValue::List(vec![
+                BencodeValue::List(vec![BencodeValue::Int(420),])
+            ])])]
+        )
     }
 
     #[test]
@@ -321,19 +360,16 @@ mod unit_tests {
         let str = "lli420el3:heyeel5:Helloee";
         let ret = decode(str).unwrap();
 
-        assert_eq!(ret, vec![
-            BencodeValue::List(vec![
+        assert_eq!(
+            ret,
+            vec![BencodeValue::List(vec![
                 BencodeValue::List(vec![
                     BencodeValue::Int(420),
-                    BencodeValue::List(vec![
-                        BencodeValue::ByteStr("hey".as_bytes().to_vec())
-                    ])
+                    BencodeValue::List(vec![BencodeValue::ByteStr("hey".as_bytes().to_vec())])
                 ]),
-                BencodeValue::List(vec![
-                    BencodeValue::ByteStr("Hello".as_bytes().to_vec())
-                ])
-            ])
-        ])
+                BencodeValue::List(vec![BencodeValue::ByteStr("Hello".as_bytes().to_vec())])
+            ])]
+        )
     }
 
     #[test]
@@ -435,11 +471,14 @@ mod unit_tests {
         let str = "5:admin0:3:hey";
         let result = decode(str).unwrap();
 
-        assert_eq!(result, vec![
-            BencodeValue::ByteStr("admin".as_bytes().to_vec()),
-            BencodeValue::ByteStr("".as_bytes().to_vec()),
-            BencodeValue::ByteStr("hey".as_bytes().to_vec()),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                BencodeValue::ByteStr("admin".as_bytes().to_vec()),
+                BencodeValue::ByteStr("".as_bytes().to_vec()),
+                BencodeValue::ByteStr("hey".as_bytes().to_vec()),
+            ]
+        );
     }
 }
 
